@@ -1,0 +1,27 @@
+# Quay production Caddyfile — automatic TLS, on-demand for deploy subdomains.
+# `install.sh` substitutes $QUAY_DOMAIN and $QUAY_ACME_EMAIL and writes this to
+# /etc/caddy/Caddyfile. Caddy gets + renews certificates with zero config.
+
+{
+	email {$QUAY_ACME_EMAIL}
+	on_demand_tls {
+		# Only mint a cert if the daemon confirms the host maps to a real project,
+		# so random *.quay.<domain> probes can't exhaust Let's Encrypt rate limits.
+		ask http://127.0.0.1:7000/internal/tls-check
+	}
+}
+
+# Admin dashboard + JSON API
+quay.{$QUAY_DOMAIN} {
+	reverse_proxy 127.0.0.1:7000
+	encode zstd gzip
+}
+
+# Every deploy: <project>.quay.<domain> and <version>--<project>.quay.<domain>
+*.quay.{$QUAY_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:7000
+	encode zstd gzip
+}

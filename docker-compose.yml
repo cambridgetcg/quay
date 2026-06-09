@@ -1,0 +1,22 @@
+# Local Quay — `docker compose up`, then open http://quay.localhost:7000
+# (*.localhost resolves to 127.0.0.1 in every modern browser, so previews work
+# with no DNS and no TLS). The data volume persists deploys across restarts.
+services:
+  quayd:
+    image: node:20-alpine
+    working_dir: /app
+    command: node bin/quayd.js
+    environment:
+      QUAY_DATA: /data
+      QUAY_PORT: "7000"
+      QUAY_ADMIN_HOST: quay.localhost
+      QUAY_DEPLOY_SUFFIX: quay.localhost
+    ports:
+      - "7000:7000"
+    volumes:
+      - ./src:/app/src:ro
+      - ./bin:/app/bin:ro
+      - ./package.json:/app/package.json:ro
+      - quay-data:/data
+volumes:
+  quay-data:
