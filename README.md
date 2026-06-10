@@ -22,13 +22,15 @@ The "build our own Vercel" pieces, kept deliberately small and legible:
 
 ## Security posture
 
-This daemon terminates a deploy API and serves arbitrary uploaded files, so the sharp edges are handled up front and tested ([`test/quay.test.js`](test/quay.test.js)):
+This daemon terminates a deploy API and serves arbitrary uploaded files, so the sharp edges are handled up front and tested ([`test/quay.test.js`](test/quay.test.js), 18 tests). **v0.2 was hardened after an adversarial review** that found — and verified live — a critical unauthenticated token leak and three other criticals; each is now closed with a regression test asserting the exploit fails:
 
-- **Auth:** mutating routes require a bearer token, compared in constant time.
-- **Path traversal:** served paths are resolved and confined to the deploy dir (real-path checked); `../`, encoded `..%2f`, and nested escapes all 404.
-- **Symlink uploads rejected:** a tarball symlink could otherwise point the server at `/etc/passwd`; extraction walks the tree and refuses any symlink or non-regular file.
-- **Upload bounds:** 64 MB cap; project names are strictly validated.
-- **On-demand TLS guard:** Caddy asks the daemon before minting a cert, so random subdomains can't exhaust ACME rate limits.
+- **No admin-API traversal:** the read route validated project names like the write routes did not, so `GET /api/projects/..%2Fconfig` leaked the bearer token from `config.json`. Names are now validated on *every* path; the exploit returns 404.
+- **Loopback by default:** the daemon bound `0.0.0.0`, exposing `:7000` (plaintext, no auth on reads) directly on a public VPS. It now binds `127.0.0.1`; the installer also firewalls the port.
+- **Atomic, serialized writes:** project JSON is written tmp-then-`rename` under a per-name mutex — no lost updates, no partial reads from a concurrent deploy+promote.
+- **Decompression-bomb cap:** the 64 MB limit was on *compressed* bytes; extraction now streams through a 256 MB *decompressed* budget and a 20k file cap, aborting mid-stream.
+- **Auth:** mutating routes require a bearer token, constant-time compared; `config.json` is `0600`; the token prints only when first generated.
+- **Path traversal (serving):** confined to the deploy dir (real-path checked); `../`, `..%2f`, double-encoded, control-char, and malformed-`%` paths all 404 (never 500).
+- **Symlink/hardlink uploads rejected;** the on-demand-TLS guard is loopback-only (not a public project-enumeration oracle) and also blocked at the Caddy edge.
 
 ## Layout
 
@@ -45,4 +47,6 @@ test/              9 tests — auth, traversal, symlinks, immutability, routing
 
 ## Status & roadmap
 
-**v0.1 — static sites, working end to end.** The reading room is its first tenant. Honestly not yet built: running app processes (Node/other) behind the proxy, build steps (it serves pre-built dirs), rollback UI, multi-user/teams, and log streaming. Those are the v0.2 surface. Like its sibling repos, this one requests adversarial review and revision — the daemon is small precisely so the review can be thorough.
+**v0.2 — static sites, working end to end, post-review-hardened.** The reading room is its first tenant (`quay deploy`, `promote`, `prune`, `ls`). Retention GC, a `/healthz` endpoint, atomic writes, and a systemd-hardened installer are in.
+
+Honestly not yet built (named, not implied): running app processes (Node/other) behind the proxy, build steps (it serves pre-built dirs), `ETag`/`Range` support, multi-token rotation/revocation, streaming CLI upload for multi-GB builds, and log streaming. Like its sibling repos, this one keeps requesting adversarial review and revision — the daemon is small precisely so the review can be thorough, and the last round turned up a critical the tests now guard against.

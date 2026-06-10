@@ -92,6 +92,14 @@ const commands = {
     console.log(`${ok("✓")} ${b(project)} → production ${c(version)}`);
   },
 
+  async prune({ rest, flags }) {
+    const cfg = await loadConfig();
+    const project = rest[0];
+    if (!project) throw new Error("usage: quay prune <project> [--keep N]");
+    const out = await api(cfg, "POST", `/api/projects/${encodeURIComponent(project)}/prune`, { json: { keep: Number(flags.keep || 10) } });
+    console.log(`${ok("✓")} pruned ${b(project)} — removed ${out.removed.length} old deploy(s)`);
+  },
+
   async ls({ rest }) {
     const cfg = await loadConfig();
     if (rest[0]) {
@@ -113,6 +121,7 @@ const help = `${b("qua" + c("y"))} ${dim("· self-hosted deploys")}
   quay login --token <t> [--server <url>]   save credentials
   quay deploy <dir> [--project <name>]      deploy a build → preview URL
   quay promote <project> <version>          point production at a version
+  quay prune <project> [--keep N]           GC old deploys (keep prod + last N)
   quay ls [project]                         list projects / deploys
 `;
 

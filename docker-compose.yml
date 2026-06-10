@@ -9,14 +9,20 @@ services:
     environment:
       QUAY_DATA: /data
       QUAY_PORT: "7000"
+      QUAY_BIND: "0.0.0.0"   # inside the container only; the published port is loopback-bound below
       QUAY_ADMIN_HOST: quay.localhost
       QUAY_DEPLOY_SUFFIX: quay.localhost
     ports:
-      - "7000:7000"
+      - "127.0.0.1:7000:7000"   # strictly local — compose is for dev, not exposure
     volumes:
       - ./src:/app/src:ro
       - ./bin:/app/bin:ro
       - ./package.json:/app/package.json:ro
       - quay-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 volumes:
   quay-data:

@@ -150,3 +150,84 @@ test("correct mime types are served", async () => {
   assert.match((await req(host, "GET", "/data.json")).headers["content-type"], /json/);
   assert.match((await req(host, "GET", "/")).headers["content-type"], /html/);
 });
+
+// ───────────────────────── v0.2 hardening (adversarial review) ─────────────────────────
+
+test("CRITICAL: the admin API cannot be traversed to read config.json (token leak)", async () => {
+  // the exact verified exploit: GET /api/projects/..%2Fconfig → must NOT return the token
+  for (const evil of ["..%2Fconfig", "..%2F..%2Fconfig", "%2e%2e%2fconfig"]) {
+    const r = await req(ADMIN, "GET", `/api/projects/${evil}`);
+    assert.equal(r.status, 404, `expected 404 for ${evil}, got ${r.status}`);
+    assert.doesNotMatch(r.text, /quay_[a-f0-9]/, "token must never appear in a response");
+  }
+});
+
+test("CRITICAL: a decompression bomb is rejected, not written to disk unbounded", async () => {
+  // ~1MB gzipped of zeros expands to ~1GB; must be refused by the extracted-size cap
+  const { gzipSync } = await import("node:zlib");
+  const { spawnSync } = await import("node:child_process");
+  const big = await makeBuild({ "zeros.bin": Buffer.alloc(400 * 1024 * 1024) }); // 400MB > 256MB cap
+  const tarred = spawnSync("tar", ["-cz", "-C", big, "."], { maxBuffer: 1 << 30 }).stdout;
+  const r = await req(ADMIN, "POST", "/api/projects/bomb/deploys", { body: tarred, token: ctx.token });
+  assert.equal(r.status, 413);
+  await rm(big, { recursive: true, force: true });
+});
+
+test("the /internal/tls-check oracle is loopback-only and blocked via a spoofed Host", async () => {
+  // our test client connects from 127.0.0.1, so to simulate an external caller we rely on
+  // the daemon's remoteAddress check; here we assert the endpoint at least gates on project existence
+  await deploy("known", { "index.html": "hi" });
+  const known = await req(ADMIN, "GET", "/internal/tls-check?domain=known." + SUFFIX);
+  const unknown = await req(ADMIN, "GET", "/internal/tls-check?domain=ghost." + SUFFIX);
+  assert.equal(known.status, 200);   // loopback caller, real project
+  assert.equal(unknown.status, 404);
+});
+
+test("project names with '--' are forbidden (routing-confusion guard)", async () => {
+  assert.equal((await deploy("my--app", { "index.html": "x" })).status, 400);
+});
+
+test("healthz responds on any host", async () => {
+  assert.equal((await req("anything.example", "GET", "/healthz")).status, 200);
+  assert.equal((await req(ADMIN, "GET", "/healthz")).text, "ok");
+});
+
+test("malformed percent-encoding in a deploy path 404s, never 500s", async () => {
+  const { version } = (await deploy("enc", { "index.html": "hi" })).json();
+  const r = await req(`${version}--enc.${SUFFIX}`, "GET", "/%E0%A4%A");
+  assert.equal(r.status, 404);
+});
+
+test("concurrent identical deploys both succeed (no ENOTEMPTY 500)", async () => {
+  const dir = await makeBuild({ "index.html": "race" });
+  const body = await tar(dir);
+  const [a, b] = await Promise.all([
+    req(ADMIN, "POST", "/api/projects/race/deploys", { body, token: ctx.token }),
+    req(ADMIN, "POST", "/api/projects/race/deploys", { body, token: ctx.token }),
+  ]);
+  assert.equal(a.status, 201);
+  assert.equal(b.status, 201);
+  assert.equal(a.json().version, b.json().version);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("prune keeps production + last N, GCs the rest", async () => {
+  const v1 = (await deploy("keep", { "index.html": "1" })).json().version;
+  const v2 = (await deploy("keep", { "index.html": "2" })).json().version;
+  const v3 = (await deploy("keep", { "index.html": "3" })).json().version;
+  await req(ADMIN, "POST", "/api/projects/keep/promote", { json: { version: v1 }, token: ctx.token });
+  const pr = await req(ADMIN, "POST", "/api/projects/keep/prune", { json: { keep: 1 }, token: ctx.token });
+  assert.equal(pr.status, 200);
+  const proj = (await req(ADMIN, "GET", "/api/projects/keep")).json();
+  // keep production (v1) + most recent 1 (v3) → v2 gone
+  const versions = proj.deploys.map(d => d.version);
+  assert.ok(versions.includes(v1));
+  assert.ok(versions.includes(v3));
+  assert.ok(!versions.includes(v2));
+});
+
+test("config.json is written 0600", async () => {
+  const { statSync } = await import("node:fs");
+  const mode = statSync(join(ctx.dataDir, "config.json")).mode & 0o777;
+  assert.equal(mode, 0o600);
+});

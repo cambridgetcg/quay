@@ -1,7 +1,7 @@
 {
   "name": "quay",
-  "version": "0.1.0",
-  "description": "Quay — a self-hostable deploy platform. Push a build, get an immutable preview URL, promote to production. One VPS, zero dependencies.",
+  "version": "0.2.0",
+  "description": "Quay \u2014 a self-hostable deploy platform. Push a build, get an immutable preview URL, promote to production. One VPS, zero dependencies.",
   "type": "module",
   "bin": {
     "quay": "bin/quay.js",
@@ -11,6 +11,8 @@
     "start": "node bin/quayd.js",
     "test": "node --test test/quay.test.js"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT"
 }

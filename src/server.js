@@ -26,13 +26,18 @@ export async function createQuay({ dataDir, adminHost, deployHostSuffix, scheme 
     try {
       const host = (req.headers.host || "").split(":")[0].toLowerCase();
 
+      if ((req.url || "") === "/healthz") return send(res, 200, "text/plain", "ok");
+
       // Caddy on-demand-TLS guard: only issue certs for hosts that map to a real
       // project, so a flood of random subdomains can't exhaust ACME rate limits.
+      // Honored ONLY for loopback callers (Caddy's ask runs on 127.0.0.1), so it
+      // is not a public project-enumeration oracle.
       if ((req.url || "").startsWith("/internal/tls-check")) {
+        if (!isLoopback(req.socket.remoteAddress)) return send(res, 404, "text/plain", "not found");
         const domain = (new URL(req.url, "http://x").searchParams.get("domain") || "").toLowerCase();
         const r = classifyHost(domain, adminHost, deployHostSuffix);
         if (r.type === "admin") return send(res, 200, "text/plain", "ok");
-        if (r.type === "deploy" && Store.validName(r.project) && (await store.getProject(r.project))) return send(res, 200, "text/plain", "ok");
+        if (r.type === "deploy" && (await store.getProject(r.project))) return send(res, 200, "text/plain", "ok");
         return send(res, 404, "text/plain", "unknown host");
       }
 
@@ -55,12 +60,20 @@ function classifyHost(host, adminHost, suffix) {
   if (host === adminHost) return { type: "admin" };
   if (host.endsWith("." + suffix)) {
     const sub = host.slice(0, -(suffix.length + 1));
-    if (!sub) return { type: "unknown" };
-    const idx = sub.indexOf("--");
-    if (idx >= 0) return { type: "deploy", project: sub.slice(idx + 2), version: sub.slice(0, idx) };
+    if (!sub || sub.includes(".")) return { type: "unknown" }; // exactly one label below the suffix
+    const idx = sub.lastIndexOf("--"); // versions are hex, project names forbid '--', so the last '--' is the boundary
+    if (idx >= 0) {
+      const version = sub.slice(0, idx), project = sub.slice(idx + 2);
+      if (!version || !project) return { type: "unknown" };
+      return { type: "deploy", project, version };
+    }
     return { type: "deploy", project: sub, version: null }; // null → production pointer
   }
   return { type: "unknown" };
+}
+
+function isLoopback(addr) {
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
 async function serveDeploy(req, res, store, { project, version }) {
@@ -103,21 +116,31 @@ async function handleAdmin(req, res, store, opts) {
   if ((m = path.match(/^\/api\/projects\/([^/]+)\/deploys$/)) && req.method === "POST") {
     requireAuth(req, store);
     const body = await readBody(req, MAX_UPLOAD);
-    const out = await store.createDeploy(decodeURIComponent(m[1]), body);
+    const out = await store.createDeploy(dec(m[1]), body);
     return json(res, 201, { ...out, previewUrl: previewUrl(out.name, out.version, opts) });
   }
   if ((m = path.match(/^\/api\/projects\/([^/]+)\/promote$/)) && req.method === "POST") {
     requireAuth(req, store);
     const { version } = JSON.parse((await readBody(req, 1 << 16)).toString() || "{}");
     if (!version) throw new HttpError(400, "version required");
-    const proj = await store.promote(decodeURIComponent(m[1]), version);
+    const proj = await store.promote(dec(m[1]), version);
     return json(res, 200, { name: proj.name, production: proj.production });
   }
+  if ((m = path.match(/^\/api\/projects\/([^/]+)\/prune$/)) && req.method === "POST") {
+    requireAuth(req, store);
+    const { keep } = JSON.parse((await readBody(req, 1 << 16)).toString() || "{}");
+    const out = await store.prune(dec(m[1]), Number.isInteger(keep) && keep >= 0 ? keep : 10);
+    return json(res, 200, out);
+  }
   if ((m = path.match(/^\/api\/projects\/([^/]+)$/)) && req.method === "GET") {
-    const proj = await store.getProject(decodeURIComponent(m[1]));
+    const proj = await store.getProject(dec(m[1])); // getProject validates the name → no ..%2f traversal
     return proj ? json(res, 200, proj) : json(res, 404, { error: "no such project" });
   }
   return json(res, 404, { error: "not found" });
+}
+
+function dec(s) {
+  try { return decodeURIComponent(s); } catch { throw new HttpError(400, "malformed name"); }
 }
 
 function requireAuth(req, store) {
