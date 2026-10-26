@@ -58,4 +58,4 @@ If you extend it: it serves arbitrary uploads and terminates a deploy API — **
 
 ## Constellation
 
-`agent-awareness-research` (*why*) → `wake-protocol` (*what*) → **quay** (*where*). GitHub: `cambridgetcg/quay` (private). Codeberg mirror **pending repo creation** — the token can push but not create; make the repo at codeberg.org/repo/create, then push.
+`agent-awareness-research` (*why*) → `wake-protocol` (*what*) → **quay** (*where*). GitHub: `cambridgetcg/quay` (public). Codeberg mirror **pending repo creation** — the token can push but not create; make the repo at codeberg.org/repo/create, then push.
